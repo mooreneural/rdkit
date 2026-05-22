@@ -27,6 +27,13 @@
 #include <intrin.h>
 #endif
 
+#if defined(__AVX512VPOPCNTDQ__) && defined(__AVX512F__)
+#define RDK_GPUSIM_HAVE_AVX512_VPOPCNTQ 1
+#include <immintrin.h>
+#else
+#define RDK_GPUSIM_HAVE_AVX512_VPOPCNTQ 0
+#endif
+
 namespace RDKit {
 namespace GPUSimilarity {
 
@@ -38,6 +45,64 @@ inline unsigned int popcount64(std::uint64_t x) {
 #else
   return static_cast<unsigned int>(__builtin_popcountll(x));
 #endif
+}
+
+//! Popcount over an array of uint64_t words. Uses AVX-512 VPOPCNTQ when the
+//! translation unit was compiled with the corresponding -m / /arch flags;
+//! otherwise falls back to the scalar 64-bit popcount intrinsic.
+inline unsigned int popcountWords(const std::uint64_t *data,
+                                  std::size_t words) {
+  std::size_t w = 0;
+  unsigned int total = 0;
+#if RDK_GPUSIM_HAVE_AVX512_VPOPCNTQ
+  __m512i acc = _mm512_setzero_si512();
+  for (; w + 8 <= words; w += 8) {
+    __m512i v = _mm512_loadu_si512(
+        reinterpret_cast<const __m512i *>(data + w));
+    acc = _mm512_add_epi64(acc, _mm512_popcnt_epi64(v));
+  }
+  total += static_cast<unsigned int>(_mm512_reduce_add_epi64(acc));
+#endif
+  for (; w < words; ++w) {
+    total += popcount64(data[w]);
+  }
+  return total;
+}
+
+//! Popcount of (a & b) and (a) summed in one pass; we use this to compute the
+//! intersection and the per-target popcount together without re-reading the
+//! target words. The probe popcount is computed once per probe outside this
+//! function and stored separately.
+inline void intersectAndTargetPop(const std::uint64_t *probe,
+                                  const std::uint64_t *target,
+                                  std::size_t words, unsigned int &interOut,
+                                  unsigned int &targetOut) {
+  std::size_t w = 0;
+  unsigned int inter = 0;
+  unsigned int targ = 0;
+#if RDK_GPUSIM_HAVE_AVX512_VPOPCNTQ
+  __m512i interAcc = _mm512_setzero_si512();
+  __m512i targAcc = _mm512_setzero_si512();
+  for (; w + 8 <= words; w += 8) {
+    __m512i a = _mm512_loadu_si512(
+        reinterpret_cast<const __m512i *>(probe + w));
+    __m512i b = _mm512_loadu_si512(
+        reinterpret_cast<const __m512i *>(target + w));
+    targAcc = _mm512_add_epi64(targAcc, _mm512_popcnt_epi64(b));
+    interAcc = _mm512_add_epi64(interAcc,
+                                _mm512_popcnt_epi64(_mm512_and_si512(a, b)));
+  }
+  inter += static_cast<unsigned int>(_mm512_reduce_add_epi64(interAcc));
+  targ += static_cast<unsigned int>(_mm512_reduce_add_epi64(targAcc));
+#endif
+  for (; w < words; ++w) {
+    const std::uint64_t a = probe[w];
+    const std::uint64_t b = target[w];
+    targ += popcount64(b);
+    inter += popcount64(a & b);
+  }
+  interOut = inter;
+  targetOut = targ;
 }
 
 bool envFlagSet(const char *name) {
@@ -138,21 +203,13 @@ void tanimotoMatrixCpu(const std::uint64_t *probes, std::size_t numProbes,
   auto worker = [&](std::size_t probeStart, std::size_t probeEnd) {
     for (std::size_t i = probeStart; i < probeEnd; ++i) {
       const std::uint64_t *pRow = probes + i * words;
-      unsigned int probePop = 0;
-      for (std::size_t w = 0; w < words; ++w) {
-        probePop += popcount64(pRow[w]);
-      }
+      const unsigned int probePop = popcountWords(pRow, words);
       double *outRow = out + i * numTargets;
       for (std::size_t j = 0; j < numTargets; ++j) {
         const std::uint64_t *tRow = targets + j * words;
-        unsigned int targetPop = 0;
         unsigned int interPop = 0;
-        for (std::size_t w = 0; w < words; ++w) {
-          const std::uint64_t a = pRow[w];
-          const std::uint64_t b = tRow[w];
-          targetPop += popcount64(b);
-          interPop += popcount64(a & b);
-        }
+        unsigned int targetPop = 0;
+        intersectAndTargetPop(pRow, tRow, words, interPop, targetPop);
         const unsigned int unionPop = probePop + targetPop - interPop;
         outRow[j] =
             unionPop == 0 ? 0.0 : static_cast<double>(interPop) / unionPop;

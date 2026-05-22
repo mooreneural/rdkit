@@ -75,5 +75,36 @@ RDKit::GPUSimilarity::tanimotoMatrix(
   every supported architecture.
 
 The CPU fallback uses scalar `__builtin_popcountll` / `__popcnt64` over the
-same packed layout, parallelised by probe row across hardware threads. A
-future change will add an AVX-512 / AVX2 popcount path here.
+same packed layout, parallelised by probe row across hardware threads.
+
+### AVX-512 VPOPCNTQ
+
+When the translation unit is compiled with `__AVX512VPOPCNTDQ__` and
+`__AVX512F__` defined (for example `-mavx512vpopcntdq -mavx512f` on
+GCC / Clang, or `/arch:AVX512` on MSVC and a CPU report that confirms
+`VPOPCNTQ` support), the popcount inner loop processes eight 64-bit words
+per instruction via `_mm512_popcnt_epi64`. The hardware is available on
+Intel Ice Lake and later, and on AMD Zen 4 and later. Without those
+defines, the build falls back to the scalar 64-bit popcount intrinsic
+that ships with every supported toolchain.
+
+Runtime dispatch (CPU-id at startup, picking the best of several
+compiled kernels) is not yet implemented; today the choice is made at
+compile time.
+
+## Benchmarking
+
+`Code/Bench/similarity_matrix.cpp` adds three Catch2 benchmarks under
+the `[similarity-matrix]` tag:
+
+* a naive nested-loop reference using `TanimotoSimilarity`
+* `GPUSimilarity::tanimotoMatrixCpu`
+* `GPUSimilarity::tanimotoMatrixCuda` (skipped when CUDA is unavailable)
+
+All three run on a 64 x 1024 matrix of perturbed Morgan fingerprints
+built from the standard bench sample molecules. Run with:
+
+```
+cmake --build . --target bench
+./bin/bench "[similarity-matrix]"
+```

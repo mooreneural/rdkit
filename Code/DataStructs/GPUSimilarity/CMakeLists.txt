@@ -26,3 +26,7 @@ rdkit_headers(GPUSimilarity.h DEST DataStructs/GPUSimilarity)
 
 rdkit_catch_test(testGPUSimilarity catch_tests.cpp
                  LINK_LIBRARIES GPUSimilarity DataStructs)
+
+if(RDK_BUILD_PYTHON_WRAPPERS)
+  add_subdirectory(Wrap)
+endif()

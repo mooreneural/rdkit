@@ -15,6 +15,14 @@ from rdkit import rdBase
 from rdkit.DataStructs import cDataStructs
 from rdkit.DataStructs.cDataStructs import *
 
+try:
+  from rdkit.DataStructs.cGPUSimilarity import *
+except ImportError:
+  # The bulk Tanimoto matrix extension is built alongside DataStructs but
+  # is loaded defensively so a missing or partial build does not break
+  # the rest of the package.
+  pass
+
 __doc__ = cDataStructs.__doc__
 
 similarityFunctions = [

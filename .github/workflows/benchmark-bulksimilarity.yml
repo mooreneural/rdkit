@@ -46,6 +46,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build ccache \
             libboost-all-dev libeigen3-dev \
+            libfreetype-dev libtbb-dev libpng-dev \
             zlib1g-dev
 
       - name: ccache cache

@@ -15,7 +15,9 @@ on:
 
 jobs:
   bench:
-    runs-on: ubuntu-22.04
+    # ubuntu-24.04 ships Boost 1.83, which satisfies RDKit's >= 1.81.0
+    # requirement; ubuntu-22.04 only has Boost 1.74 and fails to configure.
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
 
     steps:

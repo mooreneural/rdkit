@@ -90,19 +90,27 @@ jobs:
 
       - name: Report active CPU kernel
         run: |
-          cd build
-          ./bin/testBulkSimilarity '~[!benchmark]' 2>&1 | grep -iE 'kernel|avx|scalar' || true
+          # The runtime dispatcher selects the AVX-512 kernel iff the CPU
+          # exposes avx512f + avx512vpopcntdq (and the OS saves AVX-512
+          # state). gcc on ubuntu-24.04 always compiles the AVX-512 TU, so
+          # the CPU flags alone determine which path runs here.
+          if grep -qw vpopcntdq /proc/cpuinfo && grep -qw avx512f /proc/cpuinfo; then
+            echo "INFERRED_KERNEL=avx512vpopcntdq"
+          else
+            echo "INFERRED_KERNEL=scalar"
+          fi
 
       - name: Run [similarity-matrix] benchmark
         run: |
           cd build
-          ./bin/bench '[similarity-matrix]' \
+          BENCH=./Code/Bench/bench
+          test -x "$BENCH" || { echo "bench binary not found at $BENCH"; find . -name bench -type f; exit 1; }
+          "$BENCH" '[similarity-matrix]' \
             --benchmark-samples 30 \
             --benchmark-warmup-time 200 \
-            --reporter console | tee ../bench_output.txt
-          echo
-          echo "=== summary ==="
-          grep -E 'benchmark name|mean|naive|BulkSimilarity' ../bench_output.txt || true
+            --reporter console > ../bench_output.txt 2>&1 \
+            || { echo "bench run failed:"; cat ../bench_output.txt; exit 1; }
+          cat ../bench_output.txt
 
       - name: Upload benchmark output
         uses: actions/upload-artifact@v4

@@ -1,0 +1,109 @@
+name: Benchmark BulkSimilarity
+
+# Runs the [similarity-matrix] benchmark tag from Code/Bench against the
+# branch supplied via workflow_dispatch (defaults to the
+# feature/bulk-tanimoto-matrix branch this PR is from). Lives on the
+# ci/bench-runner branch so it does not appear in the PR diff.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch / tag / SHA to benchmark'
+        required: false
+        default: 'feature/bulk-tanimoto-matrix'
+
+jobs:
+  bench:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Record host CPU
+        run: |
+          echo "=== /proc/cpuinfo (first cpu) ==="
+          awk 'BEGIN{n=0} /^processor/{n++} n>1{exit} {print}' /proc/cpuinfo
+          echo
+          echo "=== lscpu ==="
+          lscpu
+          echo
+          echo "=== flags excerpt ==="
+          grep -m1 -oE 'flags[[:space:]]*:[^[:cntrl:]]*' /proc/cpuinfo | tr ' ' '\n' | grep -E '^(avx|popcnt|sse|fma)' | sort -u || true
+
+      - name: Checkout target ref
+        uses: actions/checkout@v4
+        with:
+          repository: mooreneural/rdkit
+          ref: ${{ inputs.ref }}
+          submodules: false
+          fetch-depth: 1
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build ccache \
+            libboost-all-dev libeigen3-dev \
+            zlib1g-dev
+
+      - name: ccache cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: bench-ccache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            bench-ccache-${{ runner.os }}-
+
+      - name: Configure CMake
+        run: |
+          mkdir build
+          cd build
+          export CC="ccache gcc"
+          export CXX="ccache g++"
+          cmake -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+                -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+                -DRDK_INSTALL_INTREE=ON \
+                -DRDK_BUILD_CPP_TESTS=ON \
+                -DRDK_BUILD_PYTHON_WRAPPERS=OFF \
+                -DRDK_BUILD_INCHI_SUPPORT=OFF \
+                -DRDK_BUILD_AVALON_SUPPORT=OFF \
+                -DRDK_BUILD_COORDGEN_SUPPORT=OFF \
+                -DRDK_BUILD_MAEPARSER_SUPPORT=OFF \
+                -DRDK_BUILD_FREESASA_SUPPORT=OFF \
+                -DRDK_BUILD_DESCRIPTORS3D=OFF \
+                -DRDK_BUILD_PUBCHEMSHAPE_SUPPORT=OFF \
+                -DRDK_BUILD_CHEMDRAW_SUPPORT=OFF \
+                -DRDK_BUILD_MINIMAL_LIB=OFF \
+                -DRDK_BUILD_THREADSAFE_SSS=ON \
+                -DRDK_USE_BOOST_IOSTREAMS=ON \
+                ..
+
+      - name: Build bench target
+        run: |
+          cd build
+          cmake --build . --target bench -j $(nproc)
+
+      - name: Report active CPU kernel
+        run: |
+          cd build
+          ./bin/testBulkSimilarity '~[!benchmark]' 2>&1 | grep -iE 'kernel|avx|scalar' || true
+
+      - name: Run [similarity-matrix] benchmark
+        run: |
+          cd build
+          ./bin/bench '[similarity-matrix]' \
+            --benchmark-samples 30 \
+            --benchmark-warmup-time 200 \
+            --reporter console | tee ../bench_output.txt
+          echo
+          echo "=== summary ==="
+          grep -E 'benchmark name|mean|naive|BulkSimilarity' ../bench_output.txt || true
+
+      - name: Upload benchmark output
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench_output
+          path: bench_output.txt
